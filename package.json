@@ -2,10 +2,14 @@
   "name": "linea",
   "private": true,
   "type": "module",
-  "workspaces": ["server"],
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
     "dev": "npm run dev -w server",
     "replay": "npm run replay -w server",
-    "start": "npm run start -w server"
+    "start": "npm run start -w server",
+    "web": "npm run dev -w web"
   }
 }
