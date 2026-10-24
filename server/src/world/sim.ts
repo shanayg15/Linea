@@ -161,6 +161,8 @@ export class World implements WorldApi {
   private worlds!: Record<Policy, PolicyWorld>;
   private cbpState!: Record<PortId, Record<Lane, { value: number | null; source: SourceRef }>>;
   private optimizerSources = new Map<string, SourceRef>();
+  /** Every CBP reading and driver report this run, so older ids the agent cites still resolve. */
+  private sourceHistory = new Map<string, SourceRef>();
   private readonly counters = new LineaCounters();
   series: MetricsPoint[] = [];
   done = false;
@@ -201,6 +203,7 @@ export class World implements WorldApi {
       },
     };
     this.optimizerSources.clear();
+    this.sourceHistory.clear();
     this.series = [];
     this.done = false;
     this.lastHeartbeatSlot = 0;
@@ -492,6 +495,7 @@ export class World implements WorldApi {
       if (!force && !spikeNow && prev !== null && Math.abs(v - prev) < PORT_UPDATE_DELTA) continue;
       st.value = v;
       st.source = this.cbpSource(port, lane, v, t);
+      this.sourceHistory.set(st.source.id, st.source);
       this.bus.emit('port.update', { portId: port, lane, waitMin: v, prevWaitMin: prev, source: st.source });
       if (prev !== null && Math.abs(v - prev) >= PORT_CHANGE_TRIGGER) {
         this.fire('port_change', { portId: port, lane, waitMin: v, prevWaitMin: prev, sourceId: st.source.id });
@@ -728,6 +732,8 @@ export class World implements WorldApi {
       });
     }
     out.push(...this.optimizerSources.values());
+    const seen = new Set(out.map((s) => s.id));
+    for (const s of this.sourceHistory.values()) if (!seen.has(s.id)) out.push(s);
     return out;
   }
 
@@ -793,6 +799,7 @@ export class World implements WorldApi {
     };
     const port: PortId = r.portId === 'tecate' ? 'tecate' : 'otay_mesa';
     this.worlds.linea.mx[port] = { min: Math.max(0, Math.round(r.extraWaitMin)), source, expiresAt: t + MX_REPORT_TTL_MS };
+    this.sourceHistory.set(source.id, source);
     this.bus.emit('queue.report', { portId: port, side: 'mx', lengthKm: km, extraWaitMin: Math.round(r.extraWaitMin), reportedBy: r.reportedBy, source });
     this.fire('queue_report', { portId: port, extraWaitMin: Math.round(r.extraWaitMin), sourceId: source.id });
     return source;
