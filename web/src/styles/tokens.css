@@ -1,0 +1,53 @@
+:root {
+  --bg: #000000;
+  --elevated: #1C1C1E;
+  --elevated-2: #2C2C2E;
+  --fill-segment: rgba(118,118,128,0.24);
+  --thumb: #636366;
+  --separator: rgba(84,84,88,0.6);
+  --hairline: rgba(255,255,255,0.08);
+
+  --label: #FFFFFF;
+  --label-2: rgba(235,235,245,0.60);
+  --label-3: rgba(235,235,245,0.30);
+
+  --blue:   #0A84FF;  /* en route, "With Linea" line */
+  --orange: #FF9F0A;  /* held at yard */
+  --yellow: #FFD60A;  /* in line */
+  --green:  #30D158;  /* crossed / on time / "saved" area */
+  --gray:   #8E8E93;  /* at yard, baseline line */
+  --red:    #FF453A;  /* WATCHDOG TRIPS ONLY — nowhere else */
+
+  --glass-bg: rgba(28,28,30,0.72);
+  --glass-blur: blur(30px) saturate(180%);
+  --glass-border: 1px solid rgba(255,255,255,0.08);
+  --glass-shadow: 0 8px 32px rgba(0,0,0,0.40);
+
+  --r-panel: 18px;  --r-row: 12px;  --r-pill: 999px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, system-ui, sans-serif;
+}
+:root.projector { --glass-bg: rgba(28,28,30,0.88); }
+
+* { font-family: var(--font); -webkit-font-smoothing: antialiased; }
+.num { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.glass { background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+         border: var(--glass-border); box-shadow: var(--glass-shadow); border-radius: var(--r-panel); }
+
+/* Type scale — only weights 400 and 600 */
+.t-display  { font-size: 48px; line-height: 52px; font-weight: 600; }
+.t-title1   { font-size: 34px; line-height: 40px; font-weight: 600; }
+.t-title3   { font-size: 20px; line-height: 25px; font-weight: 600; }
+.t-headline { font-size: 17px; line-height: 22px; font-weight: 600; }
+.t-body     { font-size: 15px; line-height: 20px; font-weight: 400; }
+.t-footnote { font-size: 13px; line-height: 18px; font-weight: 400; }
+.t-caption  { font-size: 11px; line-height: 13px; font-weight: 600; }
+.w-semibold { font-weight: 600; }
+.w-regular  { font-weight: 400; }
+
+.c-label   { color: var(--label); }
+.c-label-2 { color: var(--label-2); }
+.c-label-3 { color: var(--label-3); }
+
+.truncate-1 { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
