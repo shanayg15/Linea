@@ -90,7 +90,7 @@ async function runTurn(ctx: VoiceCtx, c: CallRecord, s: Session): Promise<{ spok
       client ??= new Anthropic();
       const msg = await client.messages.create({
         model,
-        max_tokens: 400,
+        max_tokens: 300,
         system: s.system,
         tools: c.kind === 'driver' ? DRIVER_TOOLS : DISPATCHER_TOOLS,
         messages: s.messages,
@@ -114,8 +114,9 @@ async function runTurn(ctx: VoiceCtx, c: CallRecord, s: Session): Promise<{ spok
         results.push({ type: 'tool_result', tool_use_id: u.id, content: result });
       }
       s.messages.push({ role: 'user', content: results });
-      if (endSummary && spoken.trim()) break; // already said goodbye
-      if (msg.stop_reason !== 'tool_use') break;
+      // One Claude round-trip per turn: if the reply already has words, speak them now instead of asking again
+      // (the second hop doubled latency and made Linea repeat itself). Only re-ask when it called tools silently.
+      if (spoken.trim() || msg.stop_reason !== 'tool_use') break;
     }
   } catch (err) {
     console.error('[gather] Claude turn failed', (err as Error).message);
@@ -153,7 +154,18 @@ function runVoiceTool(ctx: VoiceCtx, c: CallRecord, name: string, a: Record<stri
   }
 }
 
+const PHONE_STYLE: Record<CallRecord['language'], string> = {
+  'en-US':
+    'Phone style: at most two short sentences per reply (under 25 words total). When you call a tool, put your spoken reply in the same message as the tool call; you will not get another chance to speak before the caller answers. Never repeat what you already said. The transcription can be wrong: if an answer makes no sense, ask once, briefly, to repeat.',
+  'es-MX':
+    'Estilo telefónico: máximo dos frases cortas por respuesta (menos de 25 palabras). Cuando llames una herramienta, di tu respuesta hablada en el mismo mensaje; no tendrás otra oportunidad de hablar antes de que conteste. No repitas lo que ya dijiste. La transcripción puede fallar: si algo no tiene sentido, pide una vez, brevemente, que lo repita.',
+};
+
 function systemFor(ctx: VoiceCtx, c: CallRecord, greeting: string): Anthropic.TextBlockParam[] {
+  return [...baseSystem(ctx, c, greeting), { type: 'text', text: PHONE_STYLE[c.language] }];
+}
+
+function baseSystem(ctx: VoiceCtx, c: CallRecord, greeting: string): Anthropic.TextBlockParam[] {
   return c.kind === 'driver'
     ? [
         { type: 'text', text: c.language === 'en-US' ? DRIVER_RULES_EN : DRIVER_RULES },
@@ -210,13 +222,23 @@ function end(ctx: VoiceCtx, c: CallRecord, line: string, summary: string): strin
   return `<?xml version="1.0" encoding="UTF-8"?><Response>${sayXml(line, c.language)}<Hangup/></Response>`;
 }
 
+// Words the caller is likely to say — biases Twilio's recognizer ("no" was heard as "I think", "stuck" as "Stock").
+const HINTS: Record<CallRecord['language'], string> = {
+  'en-US':
+    'yes, no, not yet, yeah, nope, kilometer, kilometers, one, two, three, four, five, ten, miles, minutes, hour, stuck, stopped, moving, Mexican side, US side, Otay, Otay Mesa, Tecate, line, trucks, FAST lane, Pedro, keep, approve',
+  'es-MX': 'sí, no, todavía no, kilómetro, kilómetros, uno, dos, tres, cuatro, cinco, minutos, hora, parado, avanzando, lado mexicano, Otay, Tecate, fila, camiones',
+};
+
 function listen(base: string, c: CallRecord, line: string): string {
   const action = `${base}/voice/gather?callId=${encodeURIComponent(c.callId)}`;
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Gather input="speech" language="${c.language}" speechTimeout="auto" timeout="6" actionOnEmptyResult="true" method="POST" action="${xml(action)}">${sayXml(line, c.language)}</Gather></Response>`;
+  // phone_call + enhanced: Twilio's most accurate model for phone audio. A fixed pause (not "auto", which ended turns
+  // mid-sentence) and bargeIn=false so echo or background noise can't cut Linea off mid-word.
+  const pause = Math.max(1, Math.min(5, Number(process.env.GATHER_SPEECH_TIMEOUT) || 1));
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Gather input="speech" language="${c.language}" speechModel="phone_call" enhanced="true" hints="${xml(HINTS[c.language])}" speechTimeout="${pause}" timeout="6" bargeIn="false" actionOnEmptyResult="true" method="POST" action="${xml(action)}">${sayXml(line, c.language)}</Gather></Response>`;
 }
 
 function sayXml(text: string, lang: CallRecord['language']): string {
-  const voice = lang === 'es-MX' ? 'Polly.Mia' : 'Polly.Joanna';
+  const voice = lang === 'es-MX' ? process.env.GATHER_VOICE_ES || 'Polly.Mia-Neural' : process.env.GATHER_VOICE_EN || 'Polly.Joanna-Neural';
   return `<Say language="${lang}" voice="${voice}">${xml(text)}</Say>`;
 }
 
