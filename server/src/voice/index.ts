@@ -6,6 +6,7 @@ import type { StartDispatcherCall, StartDriverCall, Voice, VoiceHooks } from '..
 import type { WorldApi } from '../world/api';
 import { finishCall, liveNumberFor, newCall, publicBaseUrl, setStatus, startLive, twilioStatusToOurs, type VoiceCtx, emitStarted } from './calls';
 import { gatherStart, gatherTurn, useGather } from './gather';
+import { driverLanguage } from './prompts';
 import { greetingFor, handleRelay } from './relay';
 import { runSimulatedDispatcherCall, runSimulatedDriverCall } from './simulated';
 
@@ -30,7 +31,7 @@ export function getVoice(world: WorldApi, hooks: VoiceHooks = noopHooks): Voice 
         mode: to ? 'live' : 'simulated',
         truckId: req.truckId,
         personName: truck?.driverName ?? req.truckId,
-        language: 'es-MX',
+        language: to ? driverLanguage() : 'es-MX', // simulated scripts are written in Spanish
         purpose: req.goal === 'learn_queue' ? 'Learn the real queue length' : req.goal === 'give_instruction' ? 'Give a new instruction' : 'Check status',
         goal: req.goal,
         instruction: req.instruction,

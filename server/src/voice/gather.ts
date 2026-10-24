@@ -8,7 +8,7 @@ import { claudeCost, MODELS, usageTokens } from '../agent/cost';
 import { thinkingOff } from '../agent/dispatcher';
 import { fmtClock, portLabel, truckLabel } from '../agent/time';
 import { finishCall, setStatus, type CallRecord, type VoiceCtx } from './calls';
-import { CLOSING, DISPATCHER_RULES, DISPATCHER_TOOLS, DRIVER_RULES, DRIVER_TOOLS, dispatcherCallData, driverCallData } from './prompts';
+import { closingFor, DISPATCHER_RULES, DISPATCHER_TOOLS, DRIVER_RULES, DRIVER_RULES_EN, DRIVER_TOOLS, dispatcherCallData, driverCallData } from './prompts';
 import { greetingFor } from './relay';
 import { translateUtterance } from './translate';
 
@@ -56,12 +56,12 @@ export async function gatherTurn(ctx: VoiceCtx, callId: string, speech: string, 
   const es = call.language === 'es-MX';
   const s = sessions.get(callId);
   if (!s) return hangupXml();
-  if (Date.now() - s.startedAt > CAP_MS[call.kind]) return end(ctx, call, es ? CLOSING.es : CLOSING.en, 'Time limit reached.');
+  if (Date.now() - s.startedAt > CAP_MS[call.kind]) return end(ctx, call, closingFor(call), 'Time limit reached.');
 
   const text = speech.trim();
   if (!text) {
     s.silences++;
-    if (s.silences >= MAX_SILENCES) return end(ctx, call, es ? CLOSING.es : CLOSING.en, `${call.personName} went quiet.`);
+    if (s.silences >= MAX_SILENCES) return end(ctx, call, closingFor(call), `${call.personName} went quiet.`);
     return listen(base, call, es ? '¿Me escuchas?' : 'Are you there?');
   }
   s.silences = 0;
@@ -69,7 +69,7 @@ export async function gatherTurn(ctx: VoiceCtx, callId: string, speech: string, 
   pushUserText(s, text);
   const r = await runTurn(ctx, call, s);
   if (r.spoken) say(ctx, call, 'linea', r.spoken);
-  if (r.end) return end(ctx, call, r.spoken || (es ? CLOSING.es : CLOSING.en), r.end);
+  if (r.end) return end(ctx, call, r.spoken || closingFor(call), r.end);
   return listen(base, call, r.spoken || (es ? 'Perdón, ¿me repites?' : 'Sorry, could you say that again?'));
 }
 
@@ -156,10 +156,10 @@ function runVoiceTool(ctx: VoiceCtx, c: CallRecord, name: string, a: Record<stri
 function systemFor(ctx: VoiceCtx, c: CallRecord, greeting: string): Anthropic.TextBlockParam[] {
   return c.kind === 'driver'
     ? [
-        { type: 'text', text: DRIVER_RULES },
+        { type: 'text', text: c.language === 'en-US' ? DRIVER_RULES_EN : DRIVER_RULES },
         {
           type: 'text',
-          text: driverCallData({ goal: c.goal ?? 'check_status', truckBrief: truckBrief(ctx, c), instruction: c.instruction, greeting }),
+          text: driverCallData({ goal: c.goal ?? 'check_status', truckBrief: truckBrief(ctx, c), instruction: c.instruction, greeting, lang: c.language }),
           cache_control: { type: 'ephemeral' },
         },
       ]
@@ -175,6 +175,16 @@ function systemFor(ctx: VoiceCtx, c: CallRecord, greeting: string): Anthropic.Te
 
 function truckBrief(ctx: VoiceCtx, c: CallRecord): string {
   const t = c.truckId ? ctx.world.getTruck(c.truckId) : undefined;
+  if (c.language === 'en-US') {
+    if (!t) return 'no truck data';
+    const whereEn =
+      t.state === 'in_queue_mx' || t.state === 'in_queue_us'
+        ? `in the ${portLabel(t.port)} line (${t.lane === 'fast' ? 'FAST' : 'standard'})`
+        : t.state === 'en_route'
+          ? `driving to ${portLabel(t.port)}`
+          : 'at the yard';
+    return `${truckLabel(t.id)}, driver ${t.driverName}, cargo ${t.cargo}, ${whereEn}, deliver by ${fmtClock(t.deadline)}`;
+  }
   if (!t) return 'sin datos del camión';
   const where =
     t.state === 'in_queue_mx' || t.state === 'in_queue_us'

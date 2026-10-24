@@ -8,11 +8,12 @@ import { thinkingOff } from '../agent/dispatcher';
 import { fmtClock, portLabel, truckLabel } from '../agent/time';
 import { finishCall, setStatus, type CallRecord, type VoiceCtx } from './calls';
 import {
-  CLOSING,
+  closingFor,
   DISPATCHER_GREETING,
   DISPATCHER_RULES,
   DISPATCHER_TOOLS,
   DRIVER_RULES,
+  DRIVER_RULES_EN,
   DRIVER_TOOLS,
   dispatcherCallData,
   driverCallData,
@@ -33,7 +34,7 @@ type TwilioMsg =
   | { type: 'error'; description: string };
 
 export function greetingFor(ctx: VoiceCtx, call: CallRecord): string {
-  return call.kind === 'dispatcher' ? DISPATCHER_GREETING : driverGreeting(call.personName, call.goal ?? 'check_status');
+  return call.kind === 'dispatcher' ? DISPATCHER_GREETING : driverGreeting(call.personName, call.goal ?? 'check_status', call.language);
 }
 
 export function handleRelay(ctx: VoiceCtx, ws: WebSocket, callIdFromUrl: string | null) {
@@ -93,10 +94,10 @@ export function handleRelay(ctx: VoiceCtx, ws: WebSocket, callIdFromUrl: string 
     system =
       c.kind === 'driver'
         ? [
-            { type: 'text', text: DRIVER_RULES },
+            { type: 'text', text: c.language === 'en-US' ? DRIVER_RULES_EN : DRIVER_RULES },
             {
               type: 'text',
-              text: driverCallData({ goal: c.goal ?? 'check_status', truckBrief: truckBrief(c), instruction: c.instruction, greeting }),
+              text: driverCallData({ goal: c.goal ?? 'check_status', truckBrief: truckBrief(c), instruction: c.instruction, greeting, lang: c.language }),
               cache_control: { type: 'ephemeral' },
             },
           ]
@@ -108,7 +109,7 @@ export function handleRelay(ctx: VoiceCtx, ws: WebSocket, callIdFromUrl: string 
               cache_control: { type: 'ephemeral' },
             },
           ];
-    capTimer = setTimeout(() => void hangUp(c, c.language === 'es-MX' ? CLOSING.es : CLOSING.en, 'Time limit reached.'), CAP_MS[c.kind]);
+    capTimer = setTimeout(() => void hangUp(c, closingFor(c), 'Time limit reached.'), CAP_MS[c.kind]);
     if (c.kind === 'dispatcher') {
       // Ana hears the greeting; Linea delivers the summary without waiting for her to speak.
       messages.push({ role: 'user', content: '[Ana picked up and heard your greeting. Deliver the summary and ask the question now.]' });
@@ -191,7 +192,7 @@ export function handleRelay(ctx: VoiceCtx, ws: WebSocket, callIdFromUrl: string 
       const id = emitTranscript(c, 'linea', spoken.trim(), c.language);
       translateUtterance(ctx, { callId: c.callId, utteranceId: id, speaker: 'linea', text: spoken.trim(), lang: c.language });
     }
-    if (endRequested) await hangUp(c, spoken.trim() ? null : c.language === 'es-MX' ? CLOSING.es : CLOSING.en, endRequested.summary);
+    if (endRequested) await hangUp(c, spoken.trim() ? null : closingFor(c), endRequested.summary);
   }
 
   function runVoiceTool(c: CallRecord, name: string, a: Record<string, unknown>): { result: string; end?: { summary: string } } {
