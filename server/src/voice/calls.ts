@@ -99,7 +99,6 @@ async function placeLive(ctx: VoiceCtx, call: CallRecord) {
       url: `${base}/voice/twiml?callId=${call.callId}`,
       statusCallback: `${base}/voice/status?callId=${call.callId}`,
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-      timeout: 20,
     });
     call.callSid = created.sid;
   } catch (err) {
