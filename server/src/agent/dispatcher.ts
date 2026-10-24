@@ -11,7 +11,8 @@ import type { ProposedAction, Voice } from './types';
 import type { Watchdog } from './watchdog';
 
 const DEBOUNCE = 3 * MIN;
-const IMMEDIATE = new Set(['queue_report', 'request_queue_report', 'call_ended', 'dispatcher_decision']);
+// truck_ready / hold_expired skip the debounce too: the world auto-dispatches after 10 sim-min without an action.
+const IMMEDIATE = new Set(['queue_report', 'request_queue_report', 'call_ended', 'dispatcher_decision', 'truck_ready', 'hold_expired']);
 
 type DecisionPayload = PayloadOf<'agent.decision'>;
 
@@ -79,6 +80,9 @@ export function createDispatcher(world: WorldApi, watchdog: Watchdog, voice: Voi
     };
     const thinking = thinkingOff(model);
     if (thinking) params.thinking = thinking;
+    // Low effort: fewer, consolidated tool calls and no long preamble — a plan must land well inside
+    // the world's 10-sim-min agent timeout (10 wall-seconds at 60×).
+    params.output_config = { effort: 'low' };
 
     let msg: Anthropic.Message;
     try {
@@ -253,7 +257,8 @@ export function createDispatcher(world: WorldApi, watchdog: Watchdog, voice: Voi
       sources: [p.standard.source.id, p.fast.waitMin != null ? p.fast.source.id : null, p.mxSideSource?.id ?? null].filter(Boolean),
     }));
     const trucks = view.trucks
-      .filter((t) => t.state !== 'delivered')
+      // Not-yet-loaded trucks can't be dispatched; the world fires truck_ready when they are.
+      .filter((t) => t.state !== 'delivered' && !(t.state === 'at_yard' && ms(t.readyAt) > ms(nowIso)))
       .map((t) => {
         const last = watchdog.lastCalledAt(t.id);
         return {
