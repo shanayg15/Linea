@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import type { StartDispatcherCall, StartDriverCall, Voice, VoiceHooks } from '../agent/types';
 import type { WorldApi } from '../world/api';
 import { finishCall, liveNumberFor, newCall, publicBaseUrl, setStatus, startLive, twilioStatusToOurs, type VoiceCtx, emitStarted } from './calls';
+import { gatherStart, gatherTurn, useGather } from './gather';
 import { greetingFor, handleRelay } from './relay';
 import { runSimulatedDispatcherCall, runSimulatedDriverCall } from './simulated';
 
@@ -72,12 +73,22 @@ export function mountVoice(app: Express, server: Server, world: WorldApi): void 
   getVoice(world);
   const form = express.urlencoded({ extended: false });
 
-  app.post('/voice/twiml', form, (req, res) => {
+  app.post('/voice/twiml', form, async (req, res) => {
     const callId = String(req.query.callId ?? '');
     const call = ctx?.calls.get(callId);
     const base = publicBaseUrl();
     if (!call || !base || !ctx) {
       res.type('text/xml').send('<Response><Hangup/></Response>');
+      return;
+    }
+    if (useGather()) {
+      // Free-tier transport: Twilio speech recognition + <Say>, no ConversationRelay.
+      try {
+        res.type('text/xml').send(await gatherStart(ctx, call, base));
+      } catch (err) {
+        console.error('[voice] gather start failed', err);
+        res.type('text/xml').send('<Response><Hangup/></Response>');
+      }
       return;
     }
     const wss = `${base.replace(/^http/, 'ws')}/voice/relay?callId=${encodeURIComponent(callId)}`;
@@ -104,6 +115,21 @@ export function mountVoice(app: Express, server: Server, world: WorldApi): void 
     if (s === 'no_answer' || s === 'busy') finishCall(ctx, call, 'no_answer', `${call.personName} did not answer.`);
     else if (s === 'failed') finishCall(ctx, call, 'failed', `Call to ${call.personName} failed.`);
     else if (s === 'completed') finishCall(ctx, call, 'completed', `Call with ${call.personName} ended.`);
+  });
+
+  app.post('/voice/gather', form, async (req, res) => {
+    const base = publicBaseUrl();
+    if (!ctx || !base) {
+      res.type('text/xml').send('<Response><Hangup/></Response>');
+      return;
+    }
+    try {
+      const speech = String((req.body as Record<string, unknown>)?.SpeechResult ?? '');
+      res.type('text/xml').send(await gatherTurn(ctx, String(req.query.callId ?? ''), speech, base));
+    } catch (err) {
+      console.error('[voice] gather turn failed', err);
+      res.type('text/xml').send('<Response><Hangup/></Response>');
+    }
   });
 
   app.post('/voice/connect-action', form, (_req, res) => {
