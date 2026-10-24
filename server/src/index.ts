@@ -3,7 +3,7 @@ import { fromRoot } from './server/env';
 import http from 'node:http';
 import express from 'express';
 import cors from 'cors';
-import type { ControlCmd } from '../../shared/types';
+import type { ControlCmd, PayloadOf } from '../../shared/types';
 import type { Agent } from './world/api';
 import { Bus } from './server/bus';
 import { SnapshotStore } from './server/snapshot';
@@ -28,6 +28,15 @@ const bus = new Bus(() => simTime());
 const snapshot = new SnapshotStore(bus);
 const recorder = new Recorder(bus);
 
+// Re-send the latest live CBP readings after reset/start_recording (the poller only runs every 5 min).
+const lastLiveCbp = new Map<string, PayloadOf<'live.cbp'>>();
+bus.on((e) => {
+  if (e.type === 'live.cbp') lastLiveCbp.set(`${e.payload.portId}:${e.payload.lane}`, e.payload);
+});
+const reemitLiveCbp = () => {
+  if (MODE === 'live') for (const p of [...lastLiveCbp.values()]) bus.emit('live.cbp', p);
+};
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -42,6 +51,7 @@ function recordingCmd(cmd: ControlCmd): Record<string, unknown> | null {
   if (cmd.cmd === 'start_recording') {
     const file = recorder.start();
     bus.emit('sim.control', { ...(world?.clockState() ?? replay?.clockState() ?? fallbackClock()), note: `recording → ${file}` });
+    reemitLiveCbp();
     return { file };
   }
   if (cmd.cmd === 'stop_recording') {
@@ -102,6 +112,7 @@ function control(cmd: ControlCmd): Record<string, unknown> | void {
   world.control(cmd);
   if (cmd.cmd === 'reset') {
     if (START_PAUSED) world.clock.paused = true;
+    reemitLiveCbp();
     try { agent?.handleControl(cmd); } catch (err) { console.error('[index] agent.handleControl(reset) threw', err); }
   }
 }
