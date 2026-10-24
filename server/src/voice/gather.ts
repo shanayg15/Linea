@@ -226,52 +226,115 @@ function driverIntro(c: CallRecord): string {
 
 const looksSpanish = (t: string) => /[áéíóúñ¿¡]|\b(el|la|los|las|de|por|para|hasta|quédate|sigue|espera)\b/i.test(t);
 
+/** "about two hours" / "25 minutes" — how a dispatcher would say a wait on the phone. */
+function dur(min: number, es: boolean): string {
+  if (min < 55) return es ? `${Math.max(5, Math.round(min / 5) * 5)} minutos` : `${Math.max(5, Math.round(min / 5) * 5)} minutes`;
+  if (min < 75) return es ? 'una hora' : 'an hour';
+  if (min < 105) return es ? 'hora y media' : 'an hour and a half';
+  const h = Math.round(min / 60);
+  return es ? `${h} horas` : `${h} hours`;
+}
+
 /**
- * What the dispatcher wants this driver to do, in one or two sentences: the agent's own instruction when it gave one
- * (and it's in the call's language), otherwise read from the truck's current plan in the world (which reflects the
- * dispatcher's decisions: port, lane, hold, ETA).
+ * What the dispatcher wants this driver to do and why, in two or three short sentences: the border situation (CBP wait +
+ * any driver-reported Mexican-side extra), then the instruction — the agent's own give_instruction text when it's in the
+ * call's language, otherwise the truck's current plan in the world (which reflects the dispatcher's decisions) — then
+ * what it buys them.
  */
 function driverBriefing(ctx: VoiceCtx, c: CallRecord): string | null {
-  const instr = c.instruction?.trim();
-  if (instr && (c.language === 'es-MX') === looksSpanish(instr)) return instr.replace(/[.!\s]*$/, '.');
-  const t = c.truckId ? ctx.world.getTruck(c.truckId) : undefined;
-  if (!t) return instr ?? null;
   const es = c.language === 'es-MX';
+  const instr = c.instruction?.trim();
+  const instrOk = instr && es === looksSpanish(instr) ? instr.replace(/[.!\s]*$/, '.') : null;
+  const t = c.truckId ? ctx.world.getTruck(c.truckId) : undefined;
+  if (!t) return instrOk ?? instr ?? null;
+
+  const ports = ctx.world.view('linea').ports;
+  const lineMin = (id: string | null, ln: string | null): number | null => {
+    const ps = ports.find((x) => x.id === id);
+    if (!ps) return null;
+    const l = ln === 'fast' && ps.fast.waitMin != null ? ps.fast : ps.standard;
+    return l.waitMin == null ? null : l.waitMin + ps.mxSideExtraMin;
+  };
+  const otay = lineMin('otay_mesa', 'standard');
+  const tec = lineMin('tecate', 'standard');
+  const busy = otay != null && otay >= 60;
   const port = portLabel(t.port);
   const lane = (l: string | null) => (l === 'fast' ? 'FAST' : es ? 'estándar' : 'standard');
-  const due = fmtClock(t.deadline);
+  const issue = otay == null
+    ? ''
+    : busy
+      ? es
+        ? `Otay Mesa está muy cargado, como ${dur(otay, es)} de fila${tec != null ? `, y Tecate está en ${dur(tec, es)}` : ''}.`
+        : `Otay Mesa is backed up, about ${dur(otay, es)} in line${tec != null ? `, and Tecate is only ${dur(tec, es)}` : ''}.`
+      : es
+        ? `Las filas van bien, Otay Mesa está como en ${dur(otay, es)}.`
+        : `Lines are moving well, Otay Mesa is about ${dur(otay, es)}.`;
+
+  const nextDay = ms(t.deadline) - ms(ctx.world.now()) > 12 * 3600_000;
+  const due = nextDay ? (es ? `mañana a las ${fmtClock(t.deadline)}` : `tomorrow's ${fmtClock(t.deadline)}`) : fmtClock(t.deadline);
   const late = t.etaDelivery ? Math.round((ms(t.etaDelivery) - ms(t.deadline)) / 60_000) : 0;
   const timing = !t.etaDelivery
     ? es ? `Tu entrega es antes de las ${due}.` : `Your delivery is due by ${due}.`
     : late > 0
       ? es ? `Vas unos ${late} minutos tarde para tu entrega de las ${due}.` : `You're running about ${late} minutes late for your ${due} delivery.`
-      : es ? `Vas a tiempo: entregas como a las ${fmtClock(t.etaDelivery)}, antes de las ${due}.` : `You're on track to deliver by ${fmtClock(t.etaDelivery)}, before your ${due} deadline.`;
+      : es
+        ? `Así entregas como a las ${fmtClock(t.etaDelivery)}, ${nextDay ? `mucho antes de ${due}` : `antes de las ${due}`}.`
+        : `That gets you there around ${fmtClock(t.etaDelivery)}, ${nextDay ? `well ahead of ${due} deadline` : `before your ${due} deadline`}.`;
+  const join = (...parts: string[]) => parts.filter(Boolean).join(' ');
+
+  if (instrOk) return join(issue, instrOk, timing);
   switch (t.state) {
     case 'in_queue_mx':
     case 'in_queue_us':
-      return es ? `Quédate en la fila de ${port}, carril ${lane(t.lane)}. ${timing}` : `Stay in the ${port} ${lane(t.lane)} line. ${timing}`;
+      return busy && t.port === 'otay_mesa'
+        ? es
+          ? join(issue, `Como ya estás en la fila, quédate en el carril ${lane(t.lane)} de Otay Mesa; cambiarte ahora te costaría más tiempo.`, timing)
+          : join(issue, `Since you're already in line, stay in the Otay Mesa ${lane(t.lane)} lane; switching now would cost you more time.`, timing)
+        : es
+          ? join(`Quédate en la fila de ${port}, carril ${lane(t.lane)}.`, timing)
+          : join(`Stay in the ${port} ${lane(t.lane)} line.`, timing);
     case 'en_route':
-      return es ? `Sigue hacia ${port}, carril ${lane(t.lane)}. ${timing}` : `Keep heading to ${port}, ${lane(t.lane)} lane. ${timing}`;
+      if (t.port === 'tecate' && busy) {
+        return es ? join(issue, 'Para que llegues más rápido, sigue hacia Tecate, carril estándar.', timing) : join(issue, 'To get you there faster, head to Tecate, standard lane.', timing);
+      }
+      return busy
+        ? es
+          ? join(issue, `Sigue hacia ${port}, carril ${lane(t.lane)}; sigue siendo tu opción más rápida.`, timing)
+          : join(issue, `Keep heading to ${port}, ${lane(t.lane)} lane; it's still your fastest option.`, timing)
+        : es
+          ? join(`Sigue hacia ${port}, carril ${lane(t.lane)}.`, timing)
+          : join(`Keep heading to ${port}, ${lane(t.lane)} lane.`, timing);
     case 'held': {
       const until = t.heldUntil ? fmtClock(t.heldUntil) : '';
       return es
-        ? `Espera en el patio hasta las ${until}; la fila en la frontera está muy larga. Te aviso cuando salgas.`
-        : `Hold at the yard until ${until}; the border line is too long right now. I'll call you when it's time to go.`;
+        ? join(issue, `Para que no te quedes atorado en esa fila, espera en el patio hasta las ${until}. Te llamo cuando sea hora de salir.`)
+        : join(issue, `To keep you out of that line, hold at the yard until ${until}. I'll call you when it's time to go.`);
     }
     case 'at_yard': {
       const best = ctx.world.scoreOptions(t.id)[0];
-      if (!best) return es ? 'Espera en el patio, te aviso cuando salgas.' : "Stand by at the yard, I'll call you when it's time to go.";
+      if (!best) return es ? 'Espera en el patio, te llamo cuando sea hora de salir.' : "Stand by at the yard, I'll call you when it's time to go.";
+      const loadedLater = ms(best.departAt) - ms(ctx.world.now()) > 60_000;
+      if (best.option === 'go_now' && loadedLater) {
+        return es
+          ? join(issue, `En cuanto te carguen, a las ${fmtClock(best.departAt)}, sal hacia ${portLabel(best.port)}, carril ${lane(best.lane)}.`)
+          : join(issue, `As soon as you're loaded at ${fmtClock(best.departAt)}, head to ${portLabel(best.port)}, ${lane(best.lane)} lane.`);
+      }
       if (best.option === 'go_now') {
-        return es ? `Sal ahora hacia ${portLabel(best.port)}, carril ${lane(best.lane)}.` : `Head out now to ${portLabel(best.port)}, ${lane(best.lane)} lane.`;
+        if (best.port === 'tecate' && busy) {
+          return es ? join(issue, 'Para que llegues más rápido, sal ahora hacia Tecate, carril estándar.') : join(issue, 'To get you there faster, head out now to Tecate, standard lane.');
+        }
+        return es
+          ? join(issue, `Sal ahora hacia ${portLabel(best.port)}, carril ${lane(best.lane)}.`)
+          : join(issue, `Head out now to ${portLabel(best.port)}, ${lane(best.lane)} lane.`);
       }
       return es
-        ? `Espera en el patio hasta las ${fmtClock(best.departAt)} y luego sal hacia ${portLabel(best.port)}.`
-        : `Wait at the yard until ${fmtClock(best.departAt)}, then head to ${portLabel(best.port)}.`;
+        ? join(issue, `Para que no te quedes atorado en la fila, espera en el patio hasta las ${fmtClock(best.departAt)} y luego sal hacia ${portLabel(best.port)}.`)
+        : join(issue, `To keep you out of that line, wait at the yard until ${fmtClock(best.departAt)}, then head to ${portLabel(best.port)}.`);
     }
     case 'crossed':
       return es ? `Ya cruzaste. Sigue directo a ${t.destination.name}.` : `You're across. Head straight to ${t.destination.name}.`;
     default:
-      return instr ?? null;
+      return instrOk ?? instr ?? null;
   }
 }
 
