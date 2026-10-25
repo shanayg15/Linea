@@ -13,7 +13,8 @@
     "replay": "npm run replay -w server",
     "web": "npm run dev -w web",
     "typecheck": "tsc --noEmit -p server && tsc --noEmit -p web",
-    "routes": "tsx scripts/build-routes.ts"
+    "routes": "tsx scripts/build-routes.ts",
+    "demo:prep": "bash scripts/demo-prep.sh"
   },
   "description": "Linea: an autonomous AI dispatcher for cross-border trucking at Otay Mesa",
   "license": "MIT"

@@ -10,7 +10,7 @@ The beacon on Ana's desk goes from green to flashing white when the blockage hit
 2. `npm start` (Claude mode). The banner must show `agent claude` and the tunnel URL.
 3. `npm run web`, then open http://localhost:5173 full screen.
 4. Beacon: `cd hardware && npm start`. The light should breathe green.
-5. In the dashboard press <kbd>Shift</kbd>+<kbd>R</kbd>, then <kbd>Space</kbd>. At about **2:45 PM** sim time press <kbd>Space</kbd> again to pause. Carlos (Truck 4) is now in the Otay line, and the island says **All clear**.
+5. `npm run demo:prep` resets the shift, runs it to **2:45 PM** sim time and pauses (or press <kbd>Shift</kbd>+<kbd>R</kbd>, <kbd>Space</kbd>, and <kbd>Space</kbd> again at 2:45). Carlos (Truck 4) is now in the Otay line, and the island says **All clear**.
 6. The 925 phone plays Carlos and Ana. Keep it on speaker by the mic and press any key during the Twilio trial message.
 
 With the default `LIVE_DRIVER_CALLS=request`, the only driver call that rings a real phone is the one you trigger with <kbd>C</kbd>, so nothing rings during setup.
