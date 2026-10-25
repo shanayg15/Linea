@@ -51,6 +51,8 @@ export interface VoiceHooks {
 export interface StartDriverCall {
   truckId: string;
   goal: CallGoal;
+  /** Asked for by the operator (hotkey C). With LIVE_DRIVER_CALLS=request (default) only these ring a real phone. */
+  operator?: boolean;
   instruction?: string;
 }
 

@@ -582,12 +582,14 @@ export class World implements WorldApi {
         } else this.emitControl('spike already fired');
         break;
       case 'inject_missed_call': this.scenario.flags.missed_call_T6 = true; this.emitControl('missed call armed for Truck 6'); break;
+      case 'chaos_flip':
       case 'inject_oscillation':
+        // The chaos test (Shift+O) flips Truck 7 through the watchdog; the flapping Tecate feed is why it would.
         this.scenario.injectOscillation(t);
         this.inStep = true;
         try { this.emitPortUpdates(t, false); } finally { this.inStep = false; }
         this.flushTriggers();
-        this.emitControl('oscillation injected');
+        this.emitControl(cmd.cmd === 'chaos_flip' ? 'chaos test: Tecate feed flapping' : 'oscillation injected');
         break;
       case 'reset':
         this.clock.reset();

@@ -178,7 +178,7 @@ export function createDispatcher(world: WorldApi, watchdog: Watchdog, voice: Voi
       case 'call_driver': {
         if (!t || !p.goal) return { ok: false, message: 'call_driver needs truck_id and goal', detail: '' };
         const instruction = typeof p.args.instruction === 'string' ? p.args.instruction : undefined;
-        await voice.startDriverCall({ truckId: t, goal: p.goal, instruction });
+        await voice.startDriverCall({ truckId: t, goal: p.goal, instruction, operator: p.args.operator === true });
         const name = world.getTruck(t)?.driverName ?? truckLabel(t);
         return { ok: true, message: 'calling', detail: `Calling ${name} · ${p.goal.replace(/_/g, ' ')}` };
       }

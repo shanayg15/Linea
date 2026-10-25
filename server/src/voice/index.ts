@@ -25,7 +25,10 @@ export function getVoice(world: WorldApi, hooks: VoiceHooks = noopHooks): Voice 
   voice = {
     async startDriverCall(req: StartDriverCall) {
       const truck = world.getTruck(req.truckId);
-      const to = liveNumberFor('driver', req.truckId);
+      // LIVE_DRIVER_CALLS=request (default): only the operator's hotkey-C call rings a real phone, so the demo phone
+      // never rings off-script; the dispatcher's own calls run as simulated calls. LIVE_DRIVER_CALLS=all lets them ring.
+      const liveAllowed = req.operator === true || (process.env.LIVE_DRIVER_CALLS ?? 'request').trim().toLowerCase() === 'all';
+      const to = liveAllowed ? liveNumberFor('driver', req.truckId) : null;
       const call = newCall(c, {
         kind: 'driver',
         mode: to ? 'live' : 'simulated',

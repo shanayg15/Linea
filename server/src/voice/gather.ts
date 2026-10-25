@@ -33,6 +33,8 @@ interface Session {
   lastLine: string;
   /** Driver calls: the dispatcher's instruction, repeated after a silence. */
   briefing: string | null;
+  /** learn_queue: one question about the Mexican-side line, then hang up. */
+  sensor: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -44,10 +46,15 @@ export function useGather(): boolean {
 /** First TwiML for an answered call: greet, then listen. */
 export async function gatherStart(ctx: VoiceCtx, call: CallRecord, base: string): Promise<string> {
   setStatus(ctx, call, 'in_progress');
-  const briefing = call.kind === 'driver' ? driverBriefing(ctx, call) : null;
-  const greeting = briefing ? `${driverIntro(call)} ${briefing} ${call.language === 'es-MX' ? '¿De acuerdo?' : 'Okay?'}` : greetingFor(ctx, call);
+  const sensor = call.kind === 'driver' && call.goal === 'learn_queue';
+  const briefing = call.kind === 'driver' && !sensor ? driverBriefing(ctx, call) : null;
+  const greeting = sensor
+    ? sensorQuestion(call)
+    : briefing
+      ? `${driverIntro(call)} ${briefing} ${call.language === 'es-MX' ? '¿De acuerdo?' : 'Okay?'}`
+      : greetingFor(ctx, call);
   say(ctx, call, 'linea', greeting);
-  const s: Session = { system: systemFor(ctx, call, greeting, briefing), messages: [], silences: 0, startedAt: Date.now(), lastLine: greeting, briefing };
+  const s: Session = { system: systemFor(ctx, call, greeting, briefing, sensor), messages: [], silences: 0, startedAt: Date.now(), lastLine: greeting, briefing, sensor };
   sessions.set(call.callId, s);
   if (call.kind === 'dispatcher') {
     // Ana hears the greeting; Linea delivers the summary without waiting for her to speak.
@@ -85,6 +92,8 @@ export async function gatherTurn(ctx: VoiceCtx, callId: string, speech: string, 
   const r = await runTurn(ctx, call, s);
   if (r.spoken) say(ctx, call, 'linea', r.spoken);
   if (r.end) return end(ctx, call, r.spoken || closingFor(call), r.end);
+  // A queue question gets one answer: thank them and hang up, whatever they said.
+  if (s.sensor) return end(ctx, call, r.spoken || closingFor(call), `${call.personName}: "${text}"`);
   return listen(base, call, r.spoken || (es ? 'Perdón, ¿me repites?' : 'Sorry, could you say that again?'));
 }
 
@@ -180,7 +189,8 @@ function runVoiceTool(ctx: VoiceCtx, c: CallRecord, name: string, a: Record<stri
       const d = { tripIds: ids.length ? ids : c.tripIds, decision, note: String(a.note ?? '') };
       c.decision = d;
       ctx.hooks.onDispatcherDecision(d);
-      return { result: 'Applied' };
+      // Ana's decision is what the call was for: hang up after the confirmation line.
+      return { result: 'Applied', end: `Ana: ${d.decision.replace(/_/g, ' ')}${d.note ? ` (${d.note})` : ''}.` };
     }
     case 'end_call':
       return { result: 'Ending call', end: String(a.summary_en ?? `Call with ${c.personName} completed.`) };
@@ -203,7 +213,32 @@ const BRIEFING_RULES: Record<CallRecord['language'], string> = {
     'La persona SOLO escucha lo que pasas a la herramienta speak; nada más de lo que escribas se oye. Cada respuesta llama speak (de tú, directo a la persona) en el mismo mensaje que las demás herramientas. Esta llamada solo entrega la instrucción del despachador, que ya dijiste en tu saludo. NO le hagas preguntas al chofer. Si acepta (sí, va, de acuerdo, órale): llama confirm_instruction con accepted=true y end_call, con una despedida corta (menos de 8 palabras). Si menciona dónde está, un retraso o un problema: regístralo con report_queue_position o report_status, reconócelo en una frase corta y llama end_call. Si no está de acuerdo: di que se lo pasas al despachador, llama confirm_instruction con accepted=false y end_call. Si no le entendiste, repite la instrucción una vez en una frase corta. Nunca más de dos frases cortas.',
 };
 
-function systemFor(ctx: VoiceCtx, c: CallRecord, greeting: string, briefing: string | null): Anthropic.TextBlockParam[] {
+const SENSOR_RULES: Record<CallRecord['language'], string> = {
+  'en-US':
+    'The person hears ONLY what you pass to the speak tool. You asked the driver one question: are they in the Otay line, and how far back on the Mexican side. Whatever they answer (kilometers, trucks, minutes, or something vague), call report_queue_position right away with your best estimate (about 30 extra minutes per km on the Mexican side, about 50 trucks per km, "long" or "a lot" ≈ 2 km), then call speak with one short thank-you that says you are updating the plan, and call end_call. If they are not in line yet, just thank them and call end_call. Never ask another question.',
+  'es-MX':
+    'La persona SOLO escucha lo que pasas a la herramienta speak. Le hiciste una sola pregunta al chofer: si ya está en la fila de Otay y qué tan atrás va del lado mexicano. Conteste lo que conteste (kilómetros, camiones, minutos o algo vago), llama report_queue_position de inmediato con tu mejor estimación (unos 30 minutos extra por km del lado mexicano, unos 50 camiones por km, "mucho" ≈ 2 km), luego llama speak con un agradecimiento corto que diga que ya ajustas el plan, y llama end_call. Si todavía no está en la fila, solo agradécele y llama end_call. Nunca hagas otra pregunta.',
+};
+
+/** The one question a sensor call asks (the line the demo video keeps). */
+function sensorQuestion(c: CallRecord): string {
+  return c.language === 'es-MX'
+    ? `Hola ${c.personName}, soy Linea, una inteligencia artificial. ¿Ya estás en la fila de Otay?`
+    : `Hi ${c.personName}, it's Linea, an AI. Are you in the Otay line yet?`;
+}
+
+function systemFor(ctx: VoiceCtx, c: CallRecord, greeting: string, briefing: string | null, sensor = false): Anthropic.TextBlockParam[] {
+  if (c.kind === 'driver' && sensor) {
+    return [
+      { type: 'text', text: c.language === 'en-US' ? DRIVER_RULES_EN : DRIVER_RULES },
+      {
+        type: 'text',
+        text: driverCallData({ goal: 'learn_queue', truckBrief: truckBrief(ctx, c), greeting, lang: c.language }),
+        cache_control: { type: 'ephemeral' },
+      },
+      { type: 'text', text: SENSOR_RULES[c.language] },
+    ];
+  }
   if (c.kind === 'driver' && briefing) {
     return [
       { type: 'text', text: c.language === 'en-US' ? DRIVER_RULES_EN : DRIVER_RULES },
@@ -409,7 +444,8 @@ function listen(base: string, c: CallRecord, line: string): string {
   // phone_call + enhanced: Twilio's most accurate model for phone audio. A fixed pause (not "auto", which ended turns
   // mid-sentence) and bargeIn=false so echo or background noise can't cut Linea off mid-word.
   const pause = Math.max(1, Math.min(5, Number(process.env.GATHER_SPEECH_TIMEOUT) || 1));
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Gather input="speech" language="${c.language}" speechModel="phone_call" enhanced="true" hints="${xml(HINTS[c.language])}" speechTimeout="${pause}" timeout="6" bargeIn="false" actionOnEmptyResult="true" method="POST" action="${xml(action)}">${sayXml(line, c.language)}</Gather></Response>`;
+  const model = c.language === 'en-US' ? ' speechModel="phone_call" enhanced="true"' : '';
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Gather input="speech" language="${c.language}"${model} hints="${xml(HINTS[c.language])}" speechTimeout="${pause}" timeout="6" bargeIn="false" actionOnEmptyResult="true" method="POST" action="${xml(action)}">${sayXml(line, c.language)}</Gather></Response>`;
 }
 
 function sayXml(text: string, lang: CallRecord['language']): string {
