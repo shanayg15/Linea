@@ -67,14 +67,14 @@ const NEEDS_HUMAN_RESPONSES = new Set(['escalated', 'paused', 'stopped']);
 const alerts = new Set<string>();
 const dispatcherCalls = new Set<string>();
 let ringing = false;
-let lastThink = 0;
+let whiteActive = false;
 let lastAlertAt = 0;
 let connectedAt = 0;
 
-const base = () => (ringing ? 'RING' : alerts.size ? 'ALERT' : 'IDLE');
+const base = () => (ringing ? 'RING' : alerts.size ? 'RING' : whiteActive ? 'WHITE' : 'IDLE');
 
 function resetState() {
-  alerts.clear(); dispatcherCalls.clear(); ringing = false;
+  alerts.clear(); dispatcherCalls.clear(); ringing = false; whiteActive = false;
   send('IDLE', true);
 }
 
@@ -85,15 +85,25 @@ function onEvent(e: any) {
   switch (e.type) {
     case 'sim.control':
       if (p.note === 'reset' || p.note?.includes('reset')) {
-        console.log('[bridge] Simulation reset: returning beacon to IDLE');
+        console.log('[bridge] Simulation reset: returning beacon to GREEN');
         resetState();
       }
       break;
+
+    case 'port.update':
+      // When a spike occurs (wait >= 60 min), transition light to WHITE
+      if (Number(p.waitMin) >= 60 && alerts.size === 0 && !ringing) {
+        whiteActive = true;
+        send('WHITE');
+      }
+      break;
+
     case 'agent.decision':
     case 'agent.thinking': {
-      if (!ringing && alerts.size === 0 && Date.now() - lastThink > 1000) {
-        lastThink = Date.now();
-        send('THINK', true);
+      // Re-planning: transition to WHITE while evaluating options
+      if (!ringing && alerts.size === 0) {
+        whiteActive = true;
+        send('WHITE');
       }
       if (MOTOR && e.type === 'agent.decision' && Array.isArray(p.truckIds) && p.truckIds.includes('T4')) {
         if (p.action === 'hold') send('BUZZ_HOLD', true);
@@ -101,38 +111,70 @@ function onEvent(e: any) {
       }
       break;
     }
+
     case 'watchdog.trip':
       if (NEEDS_HUMAN_KINDS.has(p.kind) || NEEDS_HUMAN_RESPONSES.has(p.response)) {
-        alerts.add(p.tripId); lastAlertAt = Date.now(); send(base());
+        alerts.add(p.tripId);
+        lastAlertAt = Date.now();
+        send('RING'); // Flashing Red on problem
       }
       break;
+
     case 'tool.gate':
       if (p.verdict === 'blocked' && p.tripKind) {
-        alerts.add(`gate:${p.toolCallId ?? Date.now()}`); lastAlertAt = Date.now(); send(base());
+        alerts.add(`gate:${p.toolCallId ?? Date.now()}`);
+        lastAlertAt = Date.now();
+        send('RING'); // Flashing Red
       }
       break;
+
     case 'escalation':
-      alerts.add(`esc:${p.escalationId}`); lastAlertAt = Date.now(); send(base());
+      alerts.add(`esc:${p.escalationId}`);
+      lastAlertAt = Date.now();
+      send('RING'); // Flashing Red
       break;
+
     case 'call.started':
-      if (p.kind === 'dispatcher') { dispatcherCalls.add(p.callId); ringing = true; lastAlertAt = Date.now(); send('RING'); }
+      if (p.kind === 'dispatcher') {
+        dispatcherCalls.add(p.callId);
+        ringing = true;
+        lastAlertAt = Date.now();
+        send('RING'); // Flashing Red
+      }
       break;
+
     case 'call.status':
-      if (dispatcherCalls.has(p.callId) && p.status !== 'ringing') { ringing = false; send(base()); }
-      else if (p.status === 'failed') { alerts.add(`callfail:${p.callId}`); lastAlertAt = Date.now(); send(base()); }
+      if (dispatcherCalls.has(p.callId)) {
+        if (p.status === 'ringing') {
+          ringing = true;
+          send('RING');
+        } else {
+          send(base());
+        }
+      } else if (p.status === 'failed') {
+        alerts.add(`callfail:${p.callId}`);
+        lastAlertAt = Date.now();
+        send('RING');
+      }
       break;
+
     case 'call.ended':
       if (dispatcherCalls.has(p.callId)) {
-        dispatcherCalls.delete(p.callId); ringing = false;
-        // The dispatcher answered: her decision resolves the escalation itself.
+        dispatcherCalls.delete(p.callId);
+        ringing = false;
+        whiteActive = false;
         for (const id of [...alerts]) if (id.startsWith('esc:')) alerts.delete(id);
-        send(alerts.size ? 'ALERT' : 'OK', true);
+        send(alerts.size ? 'RING' : 'OK', true);
       } else if (p.outcome === 'failed') {
-        alerts.add(`callfail:${p.callId}`); lastAlertAt = Date.now(); send(base());
+        alerts.add(`callfail:${p.callId}`);
+        lastAlertAt = Date.now();
+        send('RING');
       }
       break;
+
     case 'watchdog.resolved':
       alerts.delete(p.tripId);
+      whiteActive = false;
       for (const id of [...alerts]) if (id.startsWith('gate:') || id.startsWith('callfail:')) alerts.delete(id);
       if (!alerts.size && !ringing) send('OK', true);
       break;
