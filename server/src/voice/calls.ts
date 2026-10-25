@@ -1,4 +1,8 @@
 // Call registry, live/simulated routing, Twilio call placement, call teardown.
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
 import twilio from 'twilio';
 import { ulid } from 'ulid';
 import type { PayloadOf } from '../../../shared/types';
@@ -27,6 +31,8 @@ export interface CallRecord {
   ended: boolean;
   decision?: DispatcherDecision;
   claudeCostUsd: number;
+  /** Twilio fetched our TwiML for this call (i.e. it could reach the server through the tunnel). */
+  twimlServed?: boolean;
 }
 
 export interface VoiceCtx {
@@ -37,9 +43,40 @@ export interface VoiceCtx {
   liveQueue: CallRecord[];
 }
 
+const ENV_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.env');
+
+/** PUBLIC_BASE_URL, re-read from .env each time so a new tunnel URL works without restarting the server. */
 export function publicBaseUrl(): string | null {
-  const u = process.env.PUBLIC_BASE_URL?.trim();
+  let u = process.env.PUBLIC_BASE_URL?.trim();
+  try {
+    const fromFile = dotenv.parse(readFileSync(ENV_PATH)).PUBLIC_BASE_URL?.trim();
+    if (fromFile) u = fromFile;
+  } catch {
+    // no .env file: keep the process env value
+  }
   return u ? u.replace(/\/+$/, '') : null;
+}
+
+let reach: { at: number; url: string; ok: boolean } | null = null;
+
+/** Can Twilio reach us? GET <PUBLIC_BASE_URL>/health through the tunnel (cached 10 s). */
+export async function publicUrlReachable(): Promise<boolean> {
+  const base = publicBaseUrl();
+  if (!base) return false;
+  if (reach && reach.url === base && Date.now() - reach.at < 10_000) return reach.ok;
+  let ok = false;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 4000);
+    const r = await fetch(`${base}/health`, { signal: ctl.signal, headers: { 'user-agent': 'TwilioProxy/1.1', 'bypass-tunnel-reminder': '1' } });
+    clearTimeout(t);
+    ok = r.ok;
+  } catch {
+    ok = false;
+  }
+  reach = { at: Date.now(), url: base, ok };
+  if (!ok) console.error(`[voice] ${base} is NOT reachable — live calls fall back to simulated. Restart the tunnel (and update PUBLIC_BASE_URL in .env if its URL changed).`);
+  return ok;
 }
 
 export function liveNumberFor(kind: 'driver' | 'dispatcher', truckId: string | null): string | null {
@@ -101,11 +138,48 @@ async function placeLive(ctx: VoiceCtx, call: CallRecord) {
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
     });
     call.callSid = created.sid;
+    watchTwilio(ctx, call, client);
   } catch (err) {
     console.error('[voice] Twilio call create failed', err);
     setStatus(ctx, call, 'failed');
     finishCall(ctx, call, 'failed', `Call to ${call.personName} could not be placed.`);
   }
+}
+
+/**
+ * Backstop for lost webhooks (e.g. the tunnel dropped mid-call): poll Twilio's REST API, which doesn't need the
+ * tunnel, and end the call when Twilio says it's over — so the clock never stays stuck at 1×.
+ */
+function watchTwilio(ctx: VoiceCtx, call: CallRecord, client: ReturnType<typeof twilio>) {
+  const started = Date.now();
+  const timer = setInterval(async () => {
+    if (call.ended || !call.callSid) return clearInterval(timer);
+    if (Date.now() - started > 5 * 60_000) {
+      clearInterval(timer);
+      finishCall(ctx, call, 'failed', `Call to ${call.personName} timed out.`);
+      return;
+    }
+    try {
+      const s = twilioStatusToOurs((await client.calls(call.callSid).fetch()).status);
+      if (!s || s === 'ringing' || s === 'in_progress' || call.ended) return;
+      clearInterval(timer);
+      if (s === 'completed' && !call.twimlServed) {
+        setStatus(ctx, call, 'failed');
+        finishCall(ctx, call, 'failed', `Twilio couldn't reach Linea's server during the call to ${call.personName} (tunnel down?).`);
+      } else if (s === 'no_answer' || s === 'busy') {
+        setStatus(ctx, call, s);
+        finishCall(ctx, call, 'no_answer', `${call.personName} did not answer.`);
+      } else if (s === 'failed') {
+        setStatus(ctx, call, 'failed');
+        finishCall(ctx, call, 'failed', `Call to ${call.personName} failed.`);
+      } else {
+        setStatus(ctx, call, 'completed');
+        finishCall(ctx, call, 'completed', `Call with ${call.personName} ended.`);
+      }
+    } catch (err) {
+      console.error('[voice] Twilio status poll failed', (err as Error).message);
+    }
+  }, 5000);
 }
 
 /** Idempotent teardown: emits call.ended, books cost, restores clock, starts the next queued live call. */

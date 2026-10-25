@@ -4,7 +4,7 @@ import type { Server } from 'http';
 import { WebSocketServer } from 'ws';
 import type { StartDispatcherCall, StartDriverCall, Voice, VoiceHooks } from '../agent/types';
 import type { WorldApi } from '../world/api';
-import { finishCall, liveNumberFor, newCall, publicBaseUrl, setStatus, startLive, twilioStatusToOurs, type VoiceCtx, emitStarted } from './calls';
+import { finishCall, liveNumberFor, newCall, publicBaseUrl, publicUrlReachable, setStatus, startLive, twilioStatusToOurs, type VoiceCtx, emitStarted } from './calls';
 import { gatherStart, gatherTurn, useGather } from './gather';
 import { driverLanguage } from './prompts';
 import { greetingFor, handleRelay } from './relay';
@@ -28,7 +28,8 @@ export function getVoice(world: WorldApi, hooks: VoiceHooks = noopHooks): Voice 
       // LIVE_DRIVER_CALLS=request (default): only the operator's hotkey-C call rings a real phone, so the demo phone
       // never rings off-script; the dispatcher's own calls run as simulated calls. LIVE_DRIVER_CALLS=all lets them ring.
       const liveAllowed = req.operator === true || (process.env.LIVE_DRIVER_CALLS ?? 'request').trim().toLowerCase() === 'all';
-      const to = liveAllowed ? liveNumberFor('driver', req.truckId) : null;
+      // A dead tunnel would ring the phone and drop the call; fall back to a simulated call instead.
+      const to = liveAllowed && liveNumberFor('driver', req.truckId) && (await publicUrlReachable()) ? liveNumberFor('driver', req.truckId) : null;
       const call = newCall(c, {
         kind: 'driver',
         mode: to ? 'live' : 'simulated',
@@ -49,7 +50,7 @@ export function getVoice(world: WorldApi, hooks: VoiceHooks = noopHooks): Voice 
       return call.callId;
     },
     async startDispatcherCall(req: StartDispatcherCall) {
-      const to = liveNumberFor('dispatcher', null);
+      const to = liveNumberFor('dispatcher', null) && (await publicUrlReachable()) ? liveNumberFor('dispatcher', null) : null;
       const call = newCall(c, {
         kind: 'dispatcher',
         mode: to ? 'live' : 'simulated',
@@ -85,6 +86,7 @@ export function mountVoice(app: Express, server: Server, world: WorldApi): void 
       res.type('text/xml').send('<Response><Hangup/></Response>');
       return;
     }
+    call.twimlServed = true;
     if (useGather()) {
       // Free-tier transport: Twilio speech recognition + <Say>, no ConversationRelay.
       try {
