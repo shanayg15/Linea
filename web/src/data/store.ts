@@ -166,7 +166,14 @@ export const useStore = create<UiState>()((set, get) => {
           break;
         }
         case 'sim.control': {
-          const { note: _note, ...clock } = e.payload;
+          const { note, ...clock } = e.payload;
+          if (note === 'reset') {
+            // The server restarted the shift: drop the old feed, calls, trips and metrics (keep connection + LIVE badge).
+            const { conn, live, policyView } = get();
+            get().reset();
+            set({ conn, live, policyView, clock });
+            break;
+          }
           set({ clock });
           break;
         }
