@@ -124,12 +124,14 @@ export function StatusIsland() {
                 ) : (
                   <>
                     <span className="t-footnote c-label-2 num">{clock ? `${fmtWeekday(clock.simTime)} ${fmtTime(clock.simTime)}` : 'Connecting'}</span>
-                    {clock && <span className="t-caption c-label-3 num">{clock.paused ? 'Paused' : `${clock.speed}×`}</span>}
-                    {clock && allClear(watchdog) && (
-                      <span className="t-caption num" style={{ color: 'var(--green)' }}>
-                        All clear
-                      </span>
-                    )}
+                    {clock &&
+                      (allClear(watchdog) ? (
+                        <span className="t-caption num" style={{ color: 'var(--green)' }}>
+                          All clear
+                        </span>
+                      ) : (
+                        <span className="t-caption c-label-3 num">{clock.paused ? 'Paused' : `${clock.speed}×`}</span>
+                      ))}
                   </>
                 )}
               </div>
@@ -202,8 +204,8 @@ function LiveCbpPill({ live }: { live: Record<string, import('@shared/types').Pa
   );
 }
 
-/** Nothing needs Ana: every watchdog check is ok (or no status yet). */
+/** Nothing needs Ana: no watchdog check has tripped (a warning is still Linea's to handle). */
 function allClear(status: WatchdogStatus | null | undefined): boolean {
   if (!status) return true;
-  return status.budget.state === 'ok' && status.loops.state === 'ok' && status.progress.state === 'ok';
+  return status.budget.state !== 'tripped' && status.loops.state !== 'tripped' && status.progress.state !== 'tripped';
 }
