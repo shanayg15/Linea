@@ -497,7 +497,10 @@ export function createWatchdog(world: WorldApi, opts: WatchdogOptions = {}) {
     const delay = world.projectFleetDelayMin();
     progress.push({ delay, used: usedUsd });
     while (progress.length > NO_PROGRESS_SAMPLES + 1) progress.shift();
-    if (progress.length === NO_PROGRESS_SAMPLES + 1 && !isPaused()) {
+    // WATCHDOG_NO_PROGRESS=off (demo): the spike raises fleet delay no matter what the planner does, which would pause
+    // planning and phone Ana off-script. Status still reports the trend.
+    const noProgressOn = (process.env.WATCHDOG_NO_PROGRESS ?? 'on').trim().toLowerCase() !== 'off';
+    if (noProgressOn && progress.length === NO_PROGRESS_SAMPLES + 1 && !isPaused()) {
       const base = progress[0]!;
       const improved = base.delay - delay;
       const spent = usedUsd - base.used;
