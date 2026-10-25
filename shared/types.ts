@@ -146,4 +146,5 @@ export type ControlCmd =
   | { cmd: 'request_queue_report' }  // force agent trigger asking for a driver queue report
   | { cmd: 'budget_squeeze' }        // cap = used + $0.10 → degrade path
   | { cmd: 'reset' }
+  | { cmd: 'jump'; to: string }       // fast-forward to "HH:MM" sim time instantly, then pause (demo prep)
   | { cmd: 'start_recording' } | { cmd: 'stop_recording' };

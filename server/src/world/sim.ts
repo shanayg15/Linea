@@ -9,7 +9,7 @@ import type {
 import { PLACES, routeKey, type PlaceKey, type RoutesFile } from '../../../shared/geo';
 import type { WorldApi, WorldAction, OptionScore, Agent } from './api';
 import type { Bus } from '../server/bus';
-import { Clock, MIN, SIM_START, SIM_END, TICK_MS, toIsoPT, parseIso, hhmm, clockLabel, mulberry32, asSpeed, type Speed } from './clock';
+import { Clock, MIN, SIM_START, SIM_END, TICK_MS, toIsoPT, parseIso, hhmm, clockLabel, mulberry32, asSpeed, atPT, type Speed } from './clock';
 import { FLEET, Scenario, SPIKE_AT, type TruckSpec, type ScenarioStep } from './scenario';
 import { lengthKm, pointAlong, slicePath, lastKm, nearestIndex, haversineKm, downsample, roundPos } from './geo';
 import { scoreOptionsFor, type OptimizerCtx } from './optimizer';
@@ -168,6 +168,8 @@ export class World implements WorldApi {
   done = false;
   private timer: NodeJS.Timeout | null = null;
   private inStep = false;
+  /** True during jumpTo(): agent triggers are skipped and ready trucks take the optimizer's best option directly. */
+  private fastForwarding = false;
   private pendingTriggers: [string, Record<string, unknown> | undefined][] = [];
   private lastHeartbeatSlot = 0;
   private lastMetricsSlot = 0;
@@ -293,14 +295,19 @@ export class World implements WorldApi {
       tr.state = 'at_yard';
       tr.heldUntil = null;
       if (s.readyFired && w.policy === 'linea') {
-        s.awaitingSince = t1;
-        this.fire('hold_expired', { truckId: tr.id });
+        if (this.fastForwarding) this.autoPlan(s);
+        else {
+          s.awaitingSince = t1;
+          this.fire('hold_expired', { truckId: tr.id });
+        }
       }
     }
     if (tr.state === 'at_yard' && !s.readyFired && t1 >= s.spec.readyAt) {
       s.readyFired = true;
       if (w.policy === 'baseline') {
         this.dispatch(s, 'otay_mesa', tr.fastEligible ? 'fast' : 'standard');
+      } else if (this.fastForwarding) {
+        this.autoPlan(s);
       } else {
         s.awaitingSince = t1;
         this.fire('truck_ready', { truckId: tr.id });
@@ -446,6 +453,29 @@ export class World implements WorldApi {
     s.kmPerMin = leg.km / (leg.durMin * s.jitter);
   }
 
+  /** Fast-forward planning: take the optimizer's best option without asking the agent (no decision events). */
+  private autoPlan(s: SimTruck): void {
+    const best = this.scoreOptions(s.t.id)[0];
+    if (!best) return;
+    if (best.option === 'go_now') this.applyAction({ kind: 'dispatch', truckId: s.t.id, port: best.port, lane: best.lane });
+    else this.applyAction({ kind: 'hold', truckId: s.t.id, until: best.departAt });
+  }
+
+  /** Run the sim straight to `target` (same 15-sim-second steps as 60×), then pause. Used for demo prep. */
+  jumpTo(target: number): void {
+    if (target <= this.clock.simMs || this.done) return;
+    this.fastForwarding = true;
+    try {
+      const stepMs = 60 * TICK_MS;
+      while (this.clock.simMs < target && !this.done) this.step(Math.min(target, this.clock.simMs + stepMs));
+    } finally {
+      this.fastForwarding = false;
+      this.pendingTriggers = [];
+    }
+    this.clock.paused = true;
+    this.emitControl(`jumped to ${clockLabel(this.clock.simMs)}`);
+  }
+
   private timeoutFallback(s: SimTruck): void {
     const best = this.scoreOptions(s.t.id)[0];
     if (!best) return;
@@ -512,6 +542,7 @@ export class World implements WorldApi {
 
   // ---------- triggers ----------
   private fire(reason: string, detail?: Record<string, unknown>): void {
+    if (this.fastForwarding) return;
     if (this.inStep) {
       this.pendingTriggers.push([reason, detail]);
       return;
@@ -591,6 +622,12 @@ export class World implements WorldApi {
         this.flushTriggers();
         this.emitControl(cmd.cmd === 'chaos_flip' ? 'chaos test: Tecate feed flapping' : 'oscillation injected');
         break;
+      case 'jump': {
+        const to = /^\d{1,2}:\d{2}$/.test(String(cmd.to)) ? atPT(String(cmd.to).padStart(5, '0')) : NaN;
+        if (Number.isFinite(to)) this.jumpTo(to);
+        else this.emitControl(`jump: bad time ${String(cmd.to)}`);
+        break;
+      }
       case 'reset':
         this.clock.reset();
         this.scenario.reset();

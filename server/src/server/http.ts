@@ -9,7 +9,7 @@ const PING_MS = 15_000;
 
 const CMDS = new Set([
   'pause', 'play', 'speed', 'inject_spike', 'inject_missed_call', 'inject_oscillation', 'chaos_flip',
-  'request_queue_report', 'budget_squeeze', 'reset', 'start_recording', 'stop_recording',
+  'request_queue_report', 'budget_squeeze', 'reset', 'jump', 'start_recording', 'stop_recording',
 ]);
 
 export interface HttpDeps {
