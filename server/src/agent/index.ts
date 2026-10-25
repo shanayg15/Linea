@@ -1,6 +1,5 @@
 import { ulid } from 'ulid';
 import type { Agent, WorldApi } from '../world/api';
-import type { ProposedAction } from './types';
 import { getVoice } from '../voice';
 import { runChaos } from './chaos';
 import { assertPricesFilled, MODELS } from './cost';
@@ -41,26 +40,26 @@ export function createAgent(world: WorldApi): Agent {
       dispatcher.trigger('operator: ask a driver in line at Otay Mesa for the real queue length');
       return;
     }
-    const src = world.view().ports.find((p) => p.id === 'otay_mesa')?.standard.source.id;
-    const p: ProposedAction = {
-      toolCallId: ulid(),
-      tool: 'call_driver',
-      args: {
-        truck_id: target.id,
-        goal: 'learn_queue',
-        operator: true,
-        title: `Calling ${target.driverName} for the Mexican-side line`,
-        reasoning: `CBP only measures the US side. ${target.driverName} is already in the Otay Mesa line and can see the Mexican side.`,
-        source_ids: src ? [src] : [],
-      },
-      truckId: target.id,
-      goal: 'learn_queue',
-      sourceIds: src ? [src] : [],
-      origin: 'agent',
-    };
-    void dispatcher
-      .gateAndExecute(p, MODELS.dispatch)
-      .then((d) => d && world.bus.emit('agent.decision', d))
+    const src = world.view().ports.find((p) => p.id === 'otay_mesa')?.standard.source;
+    const args = { truck_id: target.id, goal: 'learn_queue', operator: true };
+    // The operator asked for this call explicitly, so it skips the watchdog's 10-minute duplicate check.
+    world.bus.emit('tool.gate', { toolCallId: ulid(), tool: 'call_driver', args, idempotencyKey: `operator:call_driver:${target.id}:${ulid()}`, verdict: 'allowed', origin: 'agent' });
+    void voice
+      .startDriverCall({ truckId: target.id, goal: 'learn_queue', operator: true })
+      .then(() =>
+        world.bus.emit('agent.decision', {
+          decisionId: ulid(),
+          action: 'call_driver',
+          truckIds: [target.id],
+          title: `Calling ${target.driverName} for the Mexican-side line`,
+          detail: `Calling ${target.driverName} · learn queue`,
+          reasoning: `CBP only measures the US side. ${target.driverName} is already in the Otay Mesa line and can see the Mexican side.`,
+          sources: src ? [src] : [],
+          costUsd: 0,
+          model: MODELS.dispatch,
+          origin: 'agent',
+        }),
+      )
       .catch((err) => console.error('[agent] queue report call failed', err));
   }
 

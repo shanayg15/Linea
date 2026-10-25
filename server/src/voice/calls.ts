@@ -86,6 +86,15 @@ export function liveNumberFor(kind: 'driver' | 'dispatcher', truckId: string | n
   return null;
 }
 
+/**
+ * With LIVE_DRIVER_CALLS=request (default) the live-phone driver (Carlos) is reserved for the operator's hotkey-C call:
+ * the dispatcher's own calls to him are refused, so he isn't phoned off-camera and the sensor beat stays for the demo.
+ */
+export function reservedForOperator(truckId: string): boolean {
+  const mode = (process.env.LIVE_DRIVER_CALLS ?? 'request').trim().toLowerCase();
+  return mode !== 'all' && truckId === 'T4' && !!process.env.PHONE_T4_CARLOS?.trim();
+}
+
 export function newCall(ctx: VoiceCtx, c: Omit<CallRecord, 'callId' | 'startedAtWall' | 'status' | 'ended' | 'claudeCostUsd'>): CallRecord {
   const call: CallRecord = { ...c, callId: ulid(), startedAtWall: Date.now(), status: 'created', ended: false, claudeCostUsd: 0 };
   ctx.calls.set(call.callId, call);

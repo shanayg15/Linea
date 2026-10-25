@@ -1,5 +1,6 @@
 // Dispatcher loop (TRACK_B §B1): coalesced triggers → one Claude request at a time → watchdog gate → world.
 import Anthropic from '@anthropic-ai/sdk';
+import { reservedForOperator } from '../voice/calls';
 import { ulid } from 'ulid';
 import type { ActionKind, PayloadOf, SourceRef } from '../../../shared/types';
 import type { OptionScore, WorldApi } from '../world/api';
@@ -177,6 +178,9 @@ export function createDispatcher(world: WorldApi, watchdog: Watchdog, voice: Voi
       }
       case 'call_driver': {
         if (!t || !p.goal) return { ok: false, message: 'call_driver needs truck_id and goal', detail: '' };
+        if (p.args.operator !== true && reservedForOperator(t)) {
+          return { ok: false, message: `${world.getTruck(t)?.driverName ?? t} is reserved for the operator's call (hotkey C)`, detail: '' };
+        }
         const instruction = typeof p.args.instruction === 'string' ? p.args.instruction : undefined;
         await voice.startDriverCall({ truckId: t, goal: p.goal, instruction, operator: p.args.operator === true });
         const name = world.getTruck(t)?.driverName ?? truckLabel(t);
